@@ -1,8 +1,7 @@
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 import pandas as pd
 from datetime import datetime, timedelta
 from flask_socketio import SocketIO, emit
-from flask import request
 import random
 import time
 import os
@@ -17,181 +16,126 @@ socketio = SocketIO(
     manage_session=False
 )
 
-client_sessions = {}
-
 # =========================
-# DATA LOAD
+# LOAD EXCEL (SOURCE UNIQUE)
 # =========================
-df_patients = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Patients")
-df_staff = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Staff")
-df_vehicles = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Vehicles")
+FILE = "./Healthcare_Dashboard_Full_Data.xlsx"
 
-today = datetime(2026, 4, 14)
+df_patients = pd.read_excel(FILE, sheet_name="Patients")
+df_staff = pd.read_excel(FILE, sheet_name="Staff")
+df_vehicles = pd.read_excel(FILE, sheet_name="Vehicles")
 
-# Ensure datetime format
 df_patients['Registration_Date'] = pd.to_datetime(df_patients['Registration_Date'])
+df_patients['Discharge_Date'] = pd.to_datetime(df_patients['Discharge_Date'], errors='coerce')
+
+today = df_patients['Registration_Date'].max()
 
 # =========================
-# MONTHLY TREND FROM EXCEL
+# YEARS
 # =========================
-df_patients['Month'] = df_patients['Registration_Date'].dt.to_period('M')
-monthly_counts = df_patients.groupby(['Month', 'Type']).size().unstack(fill_value=0)
-
-inpatient_counts = monthly_counts.get('Inpatient', pd.Series()).values.tolist()
-outpatient_counts = monthly_counts.get('Outpatient', pd.Series()).values.tolist()
+years = sorted(df_patients['Registration_Date'].dt.year.unique().tolist())
+years = ["Total"] + years
 
 # =========================
-# REAL TIME DATA STORAGE
+# REAL-TIME STORAGE
 # =========================
 real_time_labels = []
 real_time_in_data = []
 real_time_out_data = []
-counter = 0
 
-
-def generate_real_time_patient_values():
-    inpatients = random.choice(inpatient_counts) if inpatient_counts else random.randint(100, 200)
-    outpatients = random.choice(outpatient_counts) if outpatient_counts else random.randint(200, 400)
-    return inpatients, outpatients
-
-
-# init real-time graph
-for i in range(10):
-    in_val, out_val = generate_real_time_patient_values()
-    current_time = (datetime.now() - timedelta(seconds=(10 - i) * 10)).strftime('%H:%M:%S')
-    real_time_labels.append(current_time)
-    real_time_in_data.append(in_val)
-    real_time_out_data.append(out_val)
+client_sessions = {}
 
 # =========================
-# YEARS LIST
+# JITTER (ONLY FOR 2026)
 # =========================
-df_patients['Year'] = df_patients['Registration_Date'].dt.year
-years = sorted(df_patients['Year'].unique().tolist())
-years = ["Total"] + years
-
-staff_counts = df_staff['Role'].value_counts().to_dict()
-staff_labels = list(staff_counts.keys())
-
-vehicle_counts = df_vehicles['Status'].value_counts()
+def jitter(values, percent=0.05):
+    return [max(0, int(v + v * random.uniform(-percent, percent))) for v in values]
 
 # =========================
-# CORE FUNCTION
+# MAIN FUNCTION
 # =========================
 def compute_data_for_year(year):
 
-    # ================= TOTAL (FIXED VERSION) =================
-    if year == "Total":
+    df = df_patients.copy()
 
-        total_patients = int(len(df_patients))
+    # =====================
+    # 2025 → REAL DATA ONLY
+    # =====================
+    if year == 2025:
+        df = df[df['Registration_Date'].dt.year == 2025]
 
-        hospitalized = int(df_patients['Discharge_Date'].isna().sum())
+    # =====================
+    # 2026 → EXCEL + JITTER
+    # =====================
+    elif year == 2026:
+        df = df[df['Registration_Date'].dt.year == 2025]  # base Excel
 
-        admissions_week = int(df_patients[
-            df_patients['Registration_Date'] >= today - timedelta(days=7)
-        ].shape[0])
+    # =====================
+    # TOTAL
+    # =====================
+    elif year == "Total":
+        pass
 
-        admissions_month = int(df_patients[
-            df_patients['Registration_Date'] >= today - timedelta(days=30)
-        ].shape[0])
+    # =====================
+    # TREND
+    # =====================
+    df['Month'] = df['Registration_Date'].dt.to_period('M').astype(str)
+    trend = df.groupby(['Month', 'Type']).size().unstack(fill_value=0)
 
-        months = real_time_labels
+    trend_in = trend.get('Inpatient', pd.Series()).tolist()
+    trend_out = trend.get('Outpatient', pd.Series()).tolist()
+    months = trend.index.tolist()
 
-        trend_in_data = real_time_in_data
-        trend_out_data = real_time_out_data
+    # =====================
+    # KPIs BASE
+    # =====================
+    total_patients = len(df)
+    hospitalized = df['Discharge_Date'].isna().sum()
 
-        delta_total = 0
-        delta_hospitalized = 0
-        delta_week = 0
-        delta_month = 0
+    admissions_week = df[df['Registration_Date'] >= today - timedelta(days=7)].shape[0]
+    admissions_month = df[df['Registration_Date'] >= today - timedelta(days=30)].shape[0]
 
-        dept_data = [0, 0, 0, 0, 0]
-        dept_status = ["Stable"] * 5
-        gender_data = [0, 0]
-        staff_data = [0] * len(staff_labels)
-        vehicles_data = [
-            int(vehicle_counts.get('Available', 0)),
-            int(vehicle_counts.get('In Mission', 0)),
-            int(vehicle_counts.get('Maintenance', 0))
-        ]
+    # =====================
+    # STAFF / VEHICLES
+    # =====================
+    dept_counts = df_staff['Role'].value_counts()
 
-    # ================= YEAR 2025 (STATIC DEMO) =================
-    elif year == 2025:
-        total_patients = 1200
-        hospitalized = 350
-        admissions_week = 23
-        admissions_month = 100
+    dept_labels = dept_counts.index.tolist()
+    dept_data = dept_counts.values.tolist()
 
-        months = [f'{year}-{str(i).zfill(2)}' for i in range(1, 13)]
+    vehicles_data = df_vehicles['Status'].value_counts().reindex(
+        ['Available', 'In Mission', 'Maintenance'],
+        fill_value=0
+    ).tolist()
 
-        trend_in_data = [120, 135, 110, 145, 160, 130, 140, 155, 125, 170, 180, 165]
-        trend_out_data = [300, 320, 280, 350, 380, 310, 340, 370, 290, 400, 420, 390]
+    gender_data = df_patients['Gender'].value_counts().reindex(
+        ['Female', 'Male'],
+        fill_value=0
+    ).tolist()
 
-        dept_data = [100, 80, 120, 90, 110]
-        dept_status = ['Increasing', 'Stable', 'Decreasing', 'Increasing', 'Stable']
-
-        gender_data = [660, 540]
-        staff_data = [50, 60, 55]
-
-        vehicles_data = [10, 5, 3]
-
-        delta_total = 5.2
-        delta_hospitalized = -2.1
-        delta_week = 10.5
-        delta_month = 8.3
-
-    # ================= YEAR 2026 (REAL + LIVE FEEL) =================
+    # =====================
+    # APPLY JITTER ONLY 2026
+    # =====================
+    if year == 2026:
+        trend_in = jitter(trend_in)
+        trend_out = jitter(trend_out)
+        total_patients = max(0, total_patients + random.randint(-20, 20))
+        hospitalized = max(0, hospitalized + random.randint(-10, 10))
+        admissions_week = max(0, admissions_week + random.randint(-5, 5))
+        admissions_month = max(0, admissions_month + random.randint(-10, 10))
     else:
-
-        df_y = df_patients[df_patients['Year'] == int(year)]
-
-        total_patients = len(df_y)
-        hospitalized = df_y['Discharge_Date'].isna().sum()
-
-        admissions_week = df_y[
-            df_y['Registration_Date'] >= today - timedelta(days=7)
-        ].shape[0]
-
-        admissions_month = df_y[
-            df_y['Registration_Date'] >= today - timedelta(days=30)
-        ].shape[0]
-
-        months = [f'{year}-{str(i).zfill(2)}' for i in range(1, today.month + 1)]
-
-        trend_in_data = inpatient_counts[:len(months)]
-        trend_out_data = outpatient_counts[:len(months)]
-
-        dept_data = [138, 52, 58, 126, 83]
-        dept_status = ['Decreasing', 'Decreasing', 'Increasing', 'Decreasing', 'Stable']
-
-        gender_data = [729, 621]
-
-        staff_data = [67, 59, 51]
-
-        vehicles_data = [
-            int(vehicle_counts.get('Available', 0)),
-            int(vehicle_counts.get('In Mission', 0)),
-            int(vehicle_counts.get('Maintenance', 0))
-        ]
-
-        delta_total = -1.8
-        delta_hospitalized = 4.5
-        delta_week = 12.3
-        delta_month = -3.2
-
-    dept_labels = ["Cardiology", "Neurology", "Surgery", "Pediatrics", "Oncology"]
+        trend_in = trend_in
+        trend_out = trend_out
 
     return {
         'trend_labels': months,
-        'trend_out_data': trend_out_data,
-        'trend_in_data': trend_in_data,
+        'trend_in_data': trend_in,
+        'trend_out_data': trend_out,
 
         'dept_labels': dept_labels,
         'dept_data': dept_data,
-        'dept_status': dept_status,
 
         'gender_data': gender_data,
-        'staff_data': staff_data,
         'vehicles_data': vehicles_data,
 
         'total_patients': total_patients,
@@ -199,12 +143,11 @@ def compute_data_for_year(year):
         'admissions_week': admissions_week,
         'admissions_month': admissions_month,
 
-        'delta_total': delta_total,
-        'delta_hospitalized': delta_hospitalized,
-        'delta_week': delta_week,
-        'delta_month': delta_month
+        'delta_total': 0,
+        'delta_hospitalized': 0,
+        'delta_week': 0,
+        'delta_month': 0
     }
-
 
 # =========================
 # SOCKET EVENTS
@@ -228,33 +171,17 @@ def handle_change_year(data):
 
 
 @socketio.on('refresh_data')
-def handle_refresh_data():
+def handle_refresh():
     year = client_sessions[request.sid]['year']
     emit('update_data', compute_data_for_year(year))
 
 
 # =========================
-# BACKGROUND REAL TIME
+# REAL TIME LOOP (optional)
 # =========================
 def background_task():
-    global counter
-
     while True:
-        time.sleep(1)
-        counter += 1
-
-        if counter % 10 == 0:
-            in_val, out_val = generate_real_time_patient_values()
-            current_time = datetime.now().strftime('%H:%M:%S')
-
-            real_time_labels.append(current_time)
-            real_time_in_data.append(in_val)
-            real_time_out_data.append(out_val)
-
-            if len(real_time_labels) > 20:
-                real_time_labels.pop(0)
-                real_time_in_data.pop(0)
-                real_time_out_data.pop(0)
+        time.sleep(5)
 
         for sid in list(client_sessions.keys()):
             year = client_sessions[sid]['year']
@@ -269,10 +196,13 @@ def index():
     data = compute_data_for_year("Total")
     data['years'] = years
     data['default_year'] = "Total"
-    data['staff_labels'] = staff_labels
+    data['staff_labels'] = list(df_staff['Role'].unique())
     return render_template("index.html", data=data)
 
 
+# =========================
+# START
+# =========================
 socketio.start_background_task(background_task)
 
 if __name__ == "__main__":
