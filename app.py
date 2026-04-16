@@ -91,12 +91,12 @@ def compute_data_for_year(year):
         # Calculer les tendances mensuelles pour 2025
         df_2025['Month'] = df_2025['Registration_Date'].dt.to_period('M')
         monthly_data = df_2025.groupby(['Month', 'Type']).size().unstack(fill_value=0)
-        months = [f'2025-{str(i).zfill(2)}' for i in range(1, 13)]
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         
         trend_in_data = []
         trend_out_data = []
-        for month in months:
-            month_period = pd.Period(month)
+        for i, month in enumerate(months, 1):
+            month_period = pd.Period(f'2025-{str(i).zfill(2)}')
             if month_period in monthly_data.index:
                 trend_in_data.append(int(monthly_data.loc[month_period].get('Inpatient', 0)))
                 trend_out_data.append(int(monthly_data.loc[month_period].get('Outpatient', 0)))
@@ -143,14 +143,16 @@ def compute_data_for_year(year):
         delta_week = 12.3 + random.uniform(-5, 5)
         delta_month = -3.2 + random.uniform(-3, 3)
         
-        months = [f'2026-{str(i).zfill(2)}' for i in range(1, today.month + 1)]
+        # Pour 2026, afficher seulement les mois écoulés
+        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+        months = months[:today.month]  # Seulement les mois jusqu'à aujourd'hui
         
-        # Adjust trend data to match number of months
-        num_months = len(months)
-        base_in = [130, 145, 120, 155][:num_months]
-        base_out = [310, 330, 290, 360][:num_months]
-        trend_in_data = [val + random.randint(-10, 10) for val in base_in]
-        trend_out_data = [val + random.randint(-20, 20) for val in base_out]
+        # Générer des données aléatoires pour chaque mois
+        trend_in_data = []
+        trend_out_data = []
+        for i in range(len(months)):
+            trend_in_data.append(random.randint(100, 180))
+            trend_out_data.append(random.randint(250, 400))
         
         dept_data = [val + random.randint(-10, 10) for val in [138, 52, 58, 126, 83]]
         dept_status = ['Decreasing', 'Decreasing', 'Increasing', 'Decreasing', 'Stable']
@@ -158,7 +160,7 @@ def compute_data_for_year(year):
         staff_data = [val + random.randint(-5, 5) for val in [67, 59, 51]]
         vehicles_data = [val + random.randint(-2, 2) for val in [12, 7, 3]]
         
-    else:  # "Total" - Combinaison des données 2025 et 2026
+    else:  # "Total" - Afficher 2025 (complet) + 2026 (jusqu'à aujourd'hui)
         # Récupérer les données de 2025 et 2026
         data_2025 = compute_data_for_year(2025)
         data_2026 = compute_data_for_year(2026)
@@ -179,41 +181,27 @@ def compute_data_for_year(year):
         delta_month = (data_2025['delta_month'] * data_2025['admissions_month'] + 
                       data_2026['delta_month'] * data_2026['admissions_month']) / admissions_month if admissions_month > 0 else 0
         
-        # POUR TOTAL : Utiliser des labels mensuels au lieu du temps réel
-        # Créer des labels mensuels pour Total (janvier à décembre)
+        # Pour TOTAL : Afficher TOUS les mois de 2025 ET les mois de 2026
         months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
         
-        # Combiner les données mensuelles de 2025 et 2026 pour chaque mois
+        # Créer une ligne pour chaque mois avec les données combinées
         trend_in_data = []
         trend_out_data = []
         
-        # Créer un mapping des données par mois pour 2025
-        data_2025_in_by_month = {}
-        data_2025_out_by_month = {}
-        for i, label in enumerate(data_2025['trend_labels']):
-            if len(label) >= 7 and '-' in label:  # Format '2025-01'
-                month_num = int(label.split('-')[1])
-                month_name = months[month_num - 1]
-                data_2025_in_by_month[month_name] = data_2025['trend_in_data'][i]
-                data_2025_out_by_month[month_name] = data_2025['trend_out_data'][i]
-        
-        # Créer un mapping des données par mois pour 2026
-        data_2026_in_by_month = {}
-        data_2026_out_by_month = {}
-        for i, label in enumerate(data_2026['trend_labels']):
-            if len(label) >= 7 and '-' in label:  # Format '2026-01'
-                month_num = int(label.split('-')[1])
-                month_name = months[month_num - 1]
-                data_2026_in_by_month[month_name] = data_2026['trend_in_data'][i]
-                data_2026_out_by_month[month_name] = data_2026['trend_out_data'][i]
-        
-        # Combiner les données pour chaque mois (somme des deux années)
-        for month in months:
-            in_2025 = data_2025_in_by_month.get(month, 0)
-            in_2026 = data_2026_in_by_month.get(month, 0)
-            out_2025 = data_2025_out_by_month.get(month, 0)
-            out_2026 = data_2026_out_by_month.get(month, 0)
+        for i, month in enumerate(months, 1):
+            # Données 2025 (toujours disponibles)
+            in_2025 = data_2025['trend_in_data'][i-1] if i-1 < len(data_2025['trend_in_data']) else 0
+            out_2025 = data_2025['trend_out_data'][i-1] if i-1 < len(data_2025['trend_out_data']) else 0
             
+            # Données 2026 (seulement si le mois est passé ou si c'est le mois actuel)
+            if i <= today.month:
+                in_2026 = data_2026['trend_in_data'][i-1] if i-1 < len(data_2026['trend_in_data']) else 0
+                out_2026 = data_2026['trend_out_data'][i-1] if i-1 < len(data_2026['trend_out_data']) else 0
+            else:
+                in_2026 = 0
+                out_2026 = 0
+            
+            # Additionner les deux années
             trend_in_data.append(in_2025 + in_2026)
             trend_out_data.append(out_2025 + out_2026)
         
