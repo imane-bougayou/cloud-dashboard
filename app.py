@@ -4,6 +4,12 @@ from datetime import datetime, timedelta
 from flask_socketio import SocketIO, emit
 from flask import request
 import os
+import logging
+
+# =========================
+# LOGGING (important debug)
+# =========================
+logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__)
 app.config['TEMPLATES_AUTO_RELOAD'] = True
@@ -16,36 +22,40 @@ socketio = SocketIO(
 )
 
 # =========================
-# LOAD EXCEL DATA
+# LOAD EXCEL SAFE
 # =========================
 df_patients = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Patients")
 df_staff = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Staff")
 df_vehicles = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Vehicles")
 
-# Convert dates once
-df_patients['Registration_Date'] = pd.to_datetime(df_patients['Registration_Date'])
-df_patients['Discharge_Date'] = pd.to_datetime(df_patients['Discharge_Date'], errors='coerce')
+# SAFE DATE CONVERSION (FIX CRASH)
+df_patients['Registration_Date'] = pd.to_datetime(df_patients.get('Registration_Date'), errors='coerce')
+df_patients['Discharge_Date'] = pd.to_datetime(df_patients.get('Discharge_Date'), errors='coerce')
 
 today = datetime(2026, 4, 14)
 
-# Add year column
+# Add year column safely
 df_patients['Year'] = df_patients['Registration_Date'].dt.year
 
-years = sorted(df_patients['Year'].dropna().unique().tolist())
-years = ["Total"] + [int(y) for y in years]
+years = df_patients['Year'].dropna().unique().tolist()
+years = sorted([int(y) for y in years])
+years = ["Total"] + years
 
 client_sessions = {}
 
 # =========================
-# CORE LOGIC (EXCEL ONLY)
+# CORE FUNCTION (SAFE + EXCEL ONLY)
 # =========================
 def compute_data_for_year(year):
 
-    # FILTER DATA
+    # FILTER SAFE
     if year == "Total":
-        df = df_patients
+        df = df_patients.copy()
     else:
-        df = df_patients[df_patients['Year'] == int(year)]
+        df = df_patients[df_patients['Year'] == int(year)].copy()
+
+    # DROP NULL DATES SAFELY
+    df = df.dropna(subset=['Registration_Date'])
 
     # =========================
     # BASIC STATS
@@ -57,7 +67,7 @@ def compute_data_for_year(year):
     admissions_month = len(df[df['Registration_Date'] >= today - timedelta(days=30)])
 
     # =========================
-    # TREND (MONTHLY REAL DATA)
+    # TREND
     # =========================
     df['Month'] = df['Registration_Date'].dt.to_period('M')
 
@@ -66,14 +76,14 @@ def compute_data_for_year(year):
     trend_labels = monthly['Month'].astype(str).tolist()
     trend_in_data = monthly['count'].tolist()
 
-    # Split inpatient/outpatient
+    # In/Out patient split SAFE
     monthly_type = df.groupby(['Month', 'Type']).size().unstack(fill_value=0)
 
     trend_inpatients = monthly_type.get('Inpatient', pd.Series(0)).reindex(monthly['Month'], fill_value=0).tolist()
     trend_outpatients = monthly_type.get('Outpatient', pd.Series(0)).reindex(monthly['Month'], fill_value=0).tolist()
 
     # =========================
-    # DEPARTMENTS (REAL IF EXISTS)
+    # DEPARTMENTS SAFE
     # =========================
     dept_labels = ["Cardiology", "Neurology", "Surgery", "Pediatrics", "Oncology"]
 
@@ -83,16 +93,23 @@ def compute_data_for_year(year):
         dept_data = [0] * len(dept_labels)
 
     # =========================
-    # STAFF (REAL)
+    # STAFF SAFE
     # =========================
-    staff_counts = df_staff['Role'].value_counts()
-    staff_labels = staff_counts.index.tolist()
-    staff_data = staff_counts.values.tolist()
+    if 'Role' in df_staff.columns:
+        staff_counts = df_staff['Role'].value_counts()
+        staff_labels = staff_counts.index.tolist()
+        staff_data = staff_counts.values.tolist()
+    else:
+        staff_labels = []
+        staff_data = []
 
     # =========================
-    # VEHICLES (REAL)
+    # VEHICLES SAFE
     # =========================
-    vehicle_counts = df_vehicles['Status'].value_counts()
+    if 'Status' in df_vehicles.columns:
+        vehicle_counts = df_vehicles['Status'].value_counts()
+    else:
+        vehicle_counts = {}
 
     vehicles_data = [
         int(vehicle_counts.get('Available', 0)),
@@ -101,13 +118,16 @@ def compute_data_for_year(year):
     ]
 
     # =========================
-    # GENDER (IF EXISTS)
+    # GENDER SAFE
     # =========================
     if 'Gender' in df.columns:
         gender_data = df['Gender'].value_counts().tolist()
     else:
         gender_data = [0, 0]
 
+    # =========================
+    # RETURN
+    # =========================
     return {
         "trend_labels": trend_labels,
         "trend_in_data": trend_inpatients,
@@ -143,7 +163,7 @@ def handle_disconnect():
 
 @socketio.on('change_year')
 def handle_change_year(data):
-    year = data['year']
+    year = data.get('year', "Total")
     client_sessions[request.sid]['year'] = year
     emit('update_data', compute_data_for_year(year))
 
@@ -153,8 +173,7 @@ def handle_refresh_data():
     emit('update_data', compute_data_for_year(year))
 
 # =========================
-# REAL-TIME BACKGROUND TASK
-# (NO FAKE DATA, JUST REFRESH)
+# BACKGROUND TASK SAFE
 # =========================
 def background_task():
     while True:
@@ -169,14 +188,14 @@ def background_task():
             )
 
 # =========================
-# ROUTE
+# ROUTE SAFE
 # =========================
 @app.route('/')
 def index():
     data = compute_data_for_year("Total")
     data['years'] = years
     data['default_year'] = "Total"
-    data['staff_labels'] = data['staff_labels']
+    data['staff_labels'] = df_staff['Role'].value_counts().index.tolist() if 'Role' in df_staff.columns else []
     return render_template("index.html", data=data)
 
 # =========================
