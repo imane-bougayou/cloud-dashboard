@@ -4,14 +4,13 @@ from flask import request
 import pandas as pd
 from datetime import datetime, timedelta
 import random
-import time
 import os
 import numpy as np
 
 app = Flask(__name__)
-app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
-# ✅ IMPORTANT: threading = ZERO dependency (pas eventlet, pas gevent)
+# ✅ SAFE MODE (no eventlet, no gevent)
 socketio = SocketIO(
     app,
     cors_allowed_origins="*",
@@ -22,24 +21,30 @@ socketio = SocketIO(
 client_sessions = {}
 
 # =========================
-# LOAD EXCEL (ONLY SOURCE)
+# PATH SAFE (RAILWAY FIX)
 # =========================
-df_patients = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Patients")
-df_staff = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Staff")
-df_vehicles = pd.read_excel("./Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Vehicles")
-
-today = datetime(2026, 4, 14)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(BASE_DIR, "Healthcare_Dashboard_Full_Data.xlsx")
 
 # =========================
-# CLEAN DATA (FIX CRASH)
+# LOAD EXCEL ONLY
+# =========================
+df_patients = pd.read_excel(file_path, sheet_name="Patients")
+df_staff = pd.read_excel(file_path, sheet_name="Staff")
+df_vehicles = pd.read_excel(file_path, sheet_name="Vehicles")
+
+# =========================
+# CLEAN DATA
 # =========================
 df_patients["Registration_Date"] = pd.to_datetime(df_patients["Registration_Date"], errors="coerce")
 df_patients["Discharge_Date"] = pd.to_datetime(df_patients["Discharge_Date"], errors="coerce")
 
+today = datetime(2026, 4, 14)
+
 # =========================
-# SAFE JSON CONVERTER
+# SAFE CONVERTER
 # =========================
-def safe(v):
+def clean(v):
     if isinstance(v, (np.integer, np.int64)):
         return int(v)
     if isinstance(v, (np.floating, np.float64)):
@@ -47,7 +52,7 @@ def safe(v):
     return v
 
 # =========================
-# REAL BASE DATA (FROM EXCEL ONLY)
+# BASE METRICS (EXCEL ONLY)
 # =========================
 total_patients_base = len(df_patients)
 hospitalized_base = df_patients["Discharge_Date"].isna().sum()
@@ -61,26 +66,13 @@ admissions_month_base = df_patients[
 ].shape[0]
 
 # =========================
-# MONTHLY TREND FROM EXCEL
+# TREND DATA FROM EXCEL
 # =========================
 df_patients["Month"] = df_patients["Registration_Date"].dt.to_period("M")
+monthly = df_patients.groupby("Month").size()
 
-monthly = df_patients.groupby(["Month", "Type"]).size().unstack(fill_value=0)
-
-inpatient_counts = monthly.get("Inpatient", pd.Series()).tolist()
-outpatient_counts = monthly.get("Outpatient", pd.Series()).tolist()
-
-# =========================
-# REAL TIME DATA (CLEAN)
-# =========================
-real_time_labels = []
-real_time_in = []
-real_time_out = []
-
-for i in range(min(10, len(inpatient_counts))):
-    real_time_labels.append(f"T-{10-i}")
-    real_time_in.append(int(inpatient_counts[i]))
-    real_time_out.append(int(outpatient_counts[i]) if i < len(outpatient_counts) else 0)
+trend_labels = [str(x) for x in monthly.index.astype(str)]
+trend_values = monthly.tolist()
 
 # =========================
 # YEARS
@@ -92,53 +84,51 @@ staff_counts = df_staff["Role"].value_counts().to_dict()
 vehicle_counts = df_vehicles["Status"].value_counts().to_dict()
 
 # =========================
-# CORE FUNCTION (LOGIC ONLY)
+# COMPUTE FUNCTION
 # =========================
 def compute_data_for_year(year):
 
     if year == "Total":
-        total_patients = int(total_patients_base)
-        hospitalized = int(hospitalized_base)
-        admissions_week = int(admissions_week_base)
-        admissions_month = int(admissions_month_base)
+        return {
+            "total_patients": clean(total_patients_base),
+            "hospitalized": clean(hospitalized_base),
+            "admissions_week": clean(admissions_week_base),
+            "admissions_month": clean(admissions_month_base),
 
-        trend_in = [int(x) for x in real_time_in]
-        trend_out = [int(x) for x in real_time_out]
-        labels = real_time_labels
+            "trend_labels": trend_labels,
+            "trend_in_data": trend_values,
+            "trend_out_data": trend_values,
 
-    else:
-        year = int(year)
+            "staff_labels": list(staff_counts.keys()),
+            "staff_data": [clean(v) for v in staff_counts.values()],
 
-        df_y = df_patients[df_patients["Registration_Date"].dt.year == year]
+            "vehicles_data": [
+                clean(vehicle_counts.get("Available", 0)),
+                clean(vehicle_counts.get("In Mission", 0))
+            ]
+        }
 
-        total_patients = int(len(df_y))
-        hospitalized = int(df_y["Discharge_Date"].isna().sum())
+    year = int(year)
+    df_y = df_patients[df_patients["Registration_Date"].dt.year == year]
 
-        admissions_week = int(df_y[df_y["Registration_Date"] >= today - timedelta(days=7)].shape[0])
-        admissions_month = int(df_y[df_y["Registration_Date"] >= today - timedelta(days=30)].shape[0])
-
-        monthly_y = df_y.groupby(df_y["Registration_Date"].dt.month).size()
-
-        trend_in = monthly_y.tolist() if len(monthly_y) > 0 else [0]
-        trend_out = monthly_y.tolist() if len(monthly_y) > 0 else [0]
-        labels = [f"{year}-{i}" for i in range(1, len(trend_in) + 1)]
+    monthly_y = df_y.groupby(df_y["Registration_Date"].dt.month).size()
 
     return {
-        "total_patients": safe(total_patients),
-        "hospitalized": safe(hospitalized),
-        "admissions_week": safe(admissions_week),
-        "admissions_month": safe(admissions_month),
+        "total_patients": clean(len(df_y)),
+        "hospitalized": clean(df_y["Discharge_Date"].isna().sum()),
+        "admissions_week": clean(df_y.shape[0]),
+        "admissions_month": clean(df_y.shape[0]),
 
-        "trend_labels": labels,
-        "trend_in_data": [safe(x) for x in trend_in],
-        "trend_out_data": [safe(x) for x in trend_out],
+        "trend_labels": [f"{year}-{i}" for i in monthly_y.index],
+        "trend_in_data": [clean(x) for x in monthly_y.tolist()],
+        "trend_out_data": [clean(x) for x in monthly_y.tolist()],
 
         "staff_labels": list(staff_counts.keys()),
-        "staff_data": [safe(v) for v in staff_counts.values()],
+        "staff_data": [clean(v) for v in staff_counts.values()],
 
         "vehicles_data": [
-            safe(vehicle_counts.get("Available", 0)),
-            safe(vehicle_counts.get("In Mission", 0))
+            clean(vehicle_counts.get("Available", 0)),
+            clean(vehicle_counts.get("In Mission", 0))
         ]
     }
 
@@ -161,40 +151,49 @@ def disconnect():
     client_sessions.pop(request.sid, None)
 
 # =========================
-# BACKGROUND REALTIME LOOP
+# BACKGROUND LOOP
 # =========================
 def background_task():
     while True:
-        time.sleep(5)
-
-        if len(real_time_labels) > 0:
-            new_val = int(random.choice(inpatient_counts)) if inpatient_counts else 0
-            real_time_in.append(new_val)
-            real_time_out.append(int(new_val * random.uniform(1.2, 1.8)))
-
-            real_time_labels.append(datetime.now().strftime("%H:%M:%S"))
-
-            if len(real_time_labels) > 20:
-                real_time_labels.pop(0)
-                real_time_in.pop(0)
-                real_time_out.pop(0)
+        socketio.sleep(5)
 
         for sid in list(client_sessions.keys()):
             year = client_sessions[sid]["year"]
-            socketio.emit("update_data", compute_data_for_year(year), to=sid)
+            socketio.emit(
+                "update_data",
+                compute_data_for_year(year),
+                to=sid
+            )
+
+socketio.start_background_task(background_task)
 
 # =========================
-# ROUTE
+# ROUTE SAFE (NO CRASH)
 # =========================
 @app.route("/")
 def index():
     data = compute_data_for_year("Total")
-    data["years"] = years
-    data["default_year"] = "Total"
-    return render_template("index.html", data=data)
 
-socketio.start_background_task(background_task)
+    safe_data = {
+        "years": years,
+        "default_year": "Total",
+        "staff_labels": data.get("staff_labels", []),
+        "trend_labels": data.get("trend_labels", []),
+        "trend_in_data": data.get("trend_in_data", []),
+        "trend_out_data": data.get("trend_out_data", []),
+        "total_patients": data.get("total_patients", 0),
+        "hospitalized": data.get("hospitalized", 0),
+        "admissions_week": data.get("admissions_week", 0),
+        "admissions_month": data.get("admissions_month", 0),
+        "staff_data": data.get("staff_data", []),
+        "vehicles_data": data.get("vehicles_data", [])
+    }
 
+    return render_template("index.html", data=safe_data)
+
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     socketio.run(app, host="0.0.0.0", port=port)
