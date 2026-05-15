@@ -17,7 +17,7 @@ socketio = SocketIO(
 )
 
 # =========================
-# LOAD EXCEL
+# LOAD DATA
 # =========================
 df_patients = pd.read_excel("Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Patients")
 df_staff = pd.read_excel("Healthcare_Dashboard_Full_Data.xlsx", sheet_name="Staff")
@@ -36,7 +36,7 @@ years = ["Total"] + [int(y) for y in years]
 client_sessions = {}
 
 # =========================
-# SAFE INT CONVERTER
+# SAFE JSON CLEANER
 # =========================
 def safe(v):
     if isinstance(v, (np.integer, np.int64)):
@@ -44,16 +44,13 @@ def safe(v):
     return v
 
 def clean(data):
-    cleaned = {}
-    for k, v in data.items():
-        if isinstance(v, list):
-            cleaned[k] = [safe(x) for x in v]
-        else:
-            cleaned[k] = safe(v)
-    return cleaned
+    return {
+        k: [safe(x) for x in v] if isinstance(v, list) else safe(v)
+        for k, v in data.items()
+    }
 
 # =========================
-# CORE LOGIC
+# CORE FUNCTION
 # =========================
 def compute_data_for_year(year):
 
@@ -64,7 +61,6 @@ def compute_data_for_year(year):
 
     df = df.dropna(subset=['Registration_Date'])
 
-    # BASIC STATS
     total_patients = int(len(df))
     hospitalized = int(df['Discharge_Date'].isna().sum())
 
@@ -73,20 +69,10 @@ def compute_data_for_year(year):
 
     # TREND
     df['Month'] = df['Registration_Date'].dt.to_period('M')
-
     monthly = df.groupby('Month').size().reset_index(name='count')
 
     trend_labels = monthly['Month'].astype(str).tolist()
     trend_data = [int(x) for x in monthly['count'].tolist()]
-
-    # IN / OUT
-    monthly_type = df.groupby(['Month', 'Type']).size().unstack(fill_value=0)
-
-    trend_in = monthly_type.get('Inpatient', pd.Series(0)).reindex(monthly['Month'], fill_value=0).tolist()
-    trend_out = monthly_type.get('Outpatient', pd.Series(0)).reindex(monthly['Month'], fill_value=0).tolist()
-
-    trend_in = [int(x) for x in trend_in]
-    trend_out = [int(x) for x in trend_out]
 
     # STAFF
     staff_counts = df_staff['Role'].value_counts()
@@ -104,8 +90,7 @@ def compute_data_for_year(year):
 
     return clean({
         "trend_labels": trend_labels,
-        "trend_in_data": trend_in,
-        "trend_out_data": trend_out,
+        "trend_data": trend_data,
 
         "total_patients": total_patients,
         "hospitalized": hospitalized,
@@ -115,7 +100,10 @@ def compute_data_for_year(year):
         "staff_labels": staff_labels,
         "staff_data": staff_data,
 
-        "vehicles_data": vehicles_data
+        "vehicles_data": vehicles_data,
+
+        # 🔥 FIX CRASH JINJA
+        "gender_data": [0, 0]
     })
 
 # =========================
